@@ -13,6 +13,7 @@ app.get('/',function(req,res){
 
 server.lastPlayerID = 0;
 server.currQns = 0; 
+server.answers = [];
 
 server.listen(process.env.PORT || 8081,function(){
     console.log('Listening on '+server.address().port);
@@ -25,16 +26,30 @@ io.on('connection', function (socket) {
 
     /**** A new player added  *****/ 
     socket.on('askNewPlayer', function () {
+
         socket.player = {
             id: server.lastPlayerID++,
             isGameMaster: false,
-            madeSelection: false
+            madeSelection: false,
+            validPlayer: true
         };
 
-        // tell everyone
-        io.emit('NewPlayerJoinedServer', getAllPlayers());
+        if (server.currQns >= 1) {
+            socket.disconnect();
+            //socket.player.validPlayer = false;
+        }
 
         console.log("New user " + server.lastPlayerID + " connected to server");
+
+        //console.log(getAllPlayers());
+
+        // tell myself
+        socket.emit('NewPlayerJoinedServer', server.currQns, getAllPlayers());
+
+        // tell gamemaster if set
+        if (server.gameMasterSocket) {
+            server.gameMasterSocket.emit('NewPlayerJoinedServer', server.currQns, getAllPlayers());
+        }
 
         /**** Client drops  *****/ 
         socket.on('disconnect', function () {
@@ -45,9 +60,12 @@ io.on('connection', function (socket) {
             // game master dropped
             if(socket.player.isGameMaster)
             {
+                console.log("Game Master Disconnected");
+
                 // reset values
                 server.lastPlayerID = 0;
                 server.currQns = 0; 
+                server.answers = [];
 
                 io.emit('GameMasterDisconnected');
 
@@ -76,7 +94,18 @@ io.on('connection', function (socket) {
 
         ++server.currQns;
 
-        io.emit('OnNextBingoAnswerGenerated', server.currQns, rngBingoIndex);
+        server.answers.push(rngBingoIndex);
+        console.log("Pushing answers" + rngBingoIndex);
+
+        // reset flags
+        Object.keys(io.sockets.connected).forEach(function (socketID) {
+            var player = io.sockets.connected[socketID].player;
+            if (player) {
+                player.madeSelection = false;
+            }
+        });
+
+        io.emit('OnNextBingoAnswerGenerated', server.currQns, rngBingoIndex, getAllPlayers());
     });
 
     /**** Client confirms bingo selection  *****/
@@ -85,13 +114,35 @@ io.on('connection', function (socket) {
         socket.player.madeSelection = true;
 
         let allPlayers = getAllPlayers();
-        console.log(allPlayers);
+        //console.log(allPlayers);
 
         // tell game master about player making selections
         if(server.gameMasterSocket)
         {
-            server.gameMasterSocket.emit('OnPlayerMadeBingoSelection', allPlayers);
+            server.gameMasterSocket.emit('OnPlayerMadeBingoSelection', allPlayers, server.currQns);
         }
+    });
+
+    /**** All Players done selecting  *****/
+    socket.on('AllPlayersDoneSelection', function () {
+
+        let rngBingoIndex = server.answers[server.currQns - 1];
+
+        console.log("AllPlayersDoneSelection " + rngBingoIndex);
+
+        io.emit('RevealBingoAnswer', server.currQns, rngBingoIndex);
+    });
+
+    /**** someone bingoed  *****/
+    socket.on('OnPlayerBingoComplete', function () {
+
+      socket.player.validPlayer = false;
+      
+      // tell game master about someone bingoed
+      if(server.gameMasterSocket)
+      {
+          server.gameMasterSocket.emit('OnGMNotifyBingoComplete', socket.player);
+      }
     });
 });
 
